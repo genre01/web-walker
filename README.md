@@ -25,7 +25,7 @@ Bot de navegación humanizada para cursos Moodle con contenido H5P. Abre un Chro
 
 ## Instalación paso a paso
 
-> Comandos preparados para copiar y pegar tal cual en una terminal de Ubuntu/Debian.
+> ⚠️ Probado únicamente en **Ubuntu 24.04**. En otras distros Linux debería funcionar adaptando los `apt install` a tu gestor de paquetes, pero no está verificado.
 
 ### 1. Instala lo necesario del sistema
 
