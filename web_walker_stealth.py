@@ -31,20 +31,17 @@ if len(sys.argv) < 2:
 START_URL = sys.argv[1]
 # 2º argumento opcional: duración máxima en minutos. Si no se pasa, navega indefinidamente.
 MAX_MINUTES = float(sys.argv[2]) if len(sys.argv) > 2 else 0
-# BASE_URL y TARGET_HOST se fijan tras pulsar ENTER, usando la URL en la que estés
-# en ese momento. START_URL solo se usa para abrir el navegador la primera vez.
-BASE_URL = START_URL
 TARGET_HOST = urlparse(START_URL).netloc
 
 # Lista de módulos del curso a los que el script entrará.
 # Sustituye estos textos por los títulos visibles de los módulos en tu curso.
 # La coincidencia es por substring sin acentos y case-insensitive.
 MODULE_NAMES = [
-    "Tema 1",
-    "Tema 2",
-    "Tema 3",
-    "Tema 4",
-    "Tema 5",
+    "Introducción a la prevención de riesgos laborales",
+    "Riesgos generales y su prevención",
+    "Riesgos específicos y su prevención",
+    "Elementos básicos de gestión de la prevención de riesgos",
+    "Primeros auxilios",
 ]
 
 DEDICATION_REFRESH = 90  # segundos entre lecturas del bloque de dedicación
@@ -234,6 +231,12 @@ def maybe_refresh_dedication(page):
                 STATE["dedication_ts"] = now
 
 # ── Buscar módulos por nombre ───────────────────────────────────────────────
+# Palabras que descartan un enlace aunque coincida con un MODULE_NAME (evita exámenes etc.)
+EXCLUDE_KEYWORDS = ("ejercicio", "examen", "test", "cuestionario", "evaluaci", "prueba", "quiz")
+# Tipos de módulo Moodle que NO queremos abrir nunca
+EXCLUDE_MOD_TYPES = ("/mod/quiz/", "/mod/assign/", "/mod/feedback/", "/mod/choice/",
+                     "/mod/survey/", "/mod/workshop/", "/mod/scorm/", "/mod/h5pactivity/")
+
 def find_module_links(page):
     js = """
     () => {
@@ -250,11 +253,20 @@ def find_module_links(page):
         t = normalize(it["text"])
         if not t:
             continue
+        # Descarta por palabras de evaluación en el texto
+        if any(bad in t for bad in EXCLUDE_KEYWORDS):
+            continue
+        href, _ = urldefrag(it["href"])
+        # Descarta enlaces a la propia página base (ej. anclas de sección)
+        if href.rstrip("/") == START_URL.rstrip("/"):
+            continue
+        # Descarta por tipo de módulo en la URL
+        if any(bad in href for bad in EXCLUDE_MOD_TYPES):
+            continue
+        if urlparse(href).netloc != TARGET_HOST or href in seen:
+            continue
         for idx, name in enumerate(MODULE_NAMES_NORM):
             if name in t:
-                href, _ = urldefrag(it["href"])
-                if urlparse(href).netloc != TARGET_HOST or href in seen:
-                    continue
                 seen.add(href)
                 out.append((href, MODULE_NAMES[idx]))
                 break
@@ -327,6 +339,86 @@ def get_h5p_scope(page):
             continue
     return None
 
+def trigger_resize(page):
+    """Dispara evento resize en la página y todos sus iframes para que H5P recalcule layout."""
+    try:
+        page.evaluate("window.dispatchEvent(new Event('resize'))")
+    except Exception:
+        pass
+    for fr in page.frames:
+        try:
+            fr.evaluate("window.dispatchEvent(new Event('resize'))")
+        except Exception:
+            continue
+
+def get_h5p_container_size(page):
+    """Devuelve (w,h) del contenedor H5P principal, o None si no encontrado."""
+    selectors = [
+        ".h5p-interactive-book",
+        ".h5p-iframe",
+        ".h5p-content",
+        ".h5pactivity-content",
+    ]
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() > 0:
+                box = loc.bounding_box()
+                if box:
+                    return (box["width"], box["height"])
+        except Exception:
+            continue
+    # También buscar en iframes
+    for fr in page.frames:
+        for sel in selectors:
+            try:
+                loc = fr.locator(sel).first
+                if loc.count() > 0:
+                    box = loc.bounding_box()
+                    if box:
+                        return (box["width"], box["height"])
+            except Exception:
+                continue
+    return None
+
+def wait_for_h5p_ready(page, max_attempts=3, per_attempt_timeout=8.0):
+    """
+    Espera a que el H5P se renderice correctamente.
+    - Si no aparece o aparece muy pequeño, recarga y reintenta.
+    - Tras detectarlo, dispara resize para forzar recálculo del layout H5P.
+    """
+    for attempt in range(1, max_attempts + 1):
+        start = time.time()
+        detected = False
+        while time.time() - start < per_attempt_timeout:
+            if get_h5p_scope(page) is not None:
+                detected = True
+                break
+            time.sleep(0.5)
+
+        if detected:
+            # Forzar resize para que H5P redibuje a tamaño correcto
+            trigger_resize(page)
+            time.sleep(1.0)
+            size = get_h5p_container_size(page)
+            if size:
+                print(c(f"    H5P listo ({size[0]:.0f}x{size[1]:.0f} px)", "dim"))
+            else:
+                print(c("    H5P listo (tamaño no medible)", "dim"))
+            return True
+        else:
+            if attempt < max_attempts:
+                print(c(f"    H5P no apareció en {per_attempt_timeout:.0f}s, "
+                        f"recargando (intento {attempt+1}/{max_attempts})...", "yellow"))
+
+        if attempt < max_attempts:
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=20000)
+            except Exception as e:
+                print(c(f"    Recarga falló: {e}", "red"))
+            time.sleep(random.uniform(2.0, 3.5))
+    return False
+
 def h5p_session(page):
     n_clicks = random.randint(8, 20)
     print(c(f"    H5P: {n_clicks} interacciones planeadas", "dim"))
@@ -337,10 +429,26 @@ def h5p_session(page):
             print(c("    H5P no detectado, salgo del módulo", "yellow"))
             return
         # Inventario de acciones disponibles + pesos
-        actions = [("next", 50)]
+        actions = []
         try:
-            if scope.locator(".h5p-interactive-book-status-arrow.previous").count() > 0:
+            if scope.locator(".h5p-interactive-book-status-arrow.next:not(.disabled)").count() > 0:
+                actions.append(("next", 50))
+        except Exception:
+            pass
+        try:
+            if scope.locator(".h5p-interactive-book-status-arrow.previous:not(.disabled)").count() > 0:
                 actions.append(("prev", 10))
+        except Exception:
+            pass
+        # Moodle Book: enlaces "Siguiente / Anterior" al pie del libro (fuera del iframe H5P)
+        try:
+            if page.locator(".navbottom a.booknext").count() > 0:
+                actions.append(("booknext", 25))
+        except Exception:
+            pass
+        try:
+            if page.locator(".navbottom a.bookprev").count() > 0:
+                actions.append(("bookprev", 8))
         except Exception:
             pass
         ch_loc = scope.locator(".h5p-interactive-book-navigation-chapter-button")
@@ -353,7 +461,8 @@ def h5p_session(page):
                     ).first.text_content(timeout=300) or ""
                 except Exception:
                     title = ""
-                if "ejercicio" not in title.lower():
+                t = title.lower()
+                if not any(k in t for k in ("ejercicio", "examen", "test", "cuestionario", "evaluaci", "prueba", "quiz")):
                     safe_chapters.append((ci, title.strip()))
         except Exception:
             pass
@@ -388,6 +497,12 @@ def h5p_session(page):
                 idx, title = random.choice(safe_chapters)
                 _do_click(page, ch_loc.nth(idx))
                 label = f"capítulo «{title}»" if title else f"capítulo #{idx+1}"
+            elif choice == "booknext":
+                _do_click(page, page.locator(".navbottom a.booknext").first)
+                label = "siguiente (Moodle Book)"
+            elif choice == "bookprev":
+                _do_click(page, page.locator(".navbottom a.bookprev").first)
+                label = "anterior (Moodle Book)"
             elif choice == "panel":
                 count = panels.count()
                 idx = random.randint(0, count - 1)
@@ -496,7 +611,7 @@ def wait_for_relogin(page):
             time.sleep(5)
             continue
         try:
-            page.goto(BASE_URL, wait_until="domcontentloaded", timeout=20000)
+            page.goto(START_URL, wait_until="domcontentloaded", timeout=20000)
         except Exception:
             pass
         if not is_logged_out(page):
@@ -527,14 +642,10 @@ def main():
         page.goto(START_URL, wait_until="domcontentloaded")
 
         input(c(
-            "\n>> Inicia sesión, navega hasta la página del curso a recorrer "
-            "y pulsa ENTER (esa URL quedará como base)... ", "yellow", "bold"))
-
-        global BASE_URL, TARGET_HOST
-        BASE_URL = page.url
-        TARGET_HOST = urlparse(BASE_URL).netloc
-        print(c(f"  Página base fijada: {BASE_URL}", "green"))
-        print(c(f"  Dominio permitido:  {TARGET_HOST}\n", "green"))
+            "\n>> Inicia sesión en el navegador y pulsa ENTER para empezar... ",
+            "yellow", "bold"))
+        # La URL del CLI se usa como página base del bucle (a esa URL vuelve
+        # entre módulos). No se captura nada del navegador.
 
         STATE["session_start"] = time.time()
         stop_status = start_status_thread()
@@ -546,7 +657,7 @@ def main():
                     break
                 # ir al índice del curso
                 STATE["iteration"] += 1
-                page.goto(BASE_URL, wait_until="domcontentloaded")
+                page.goto(START_URL, wait_until="domcontentloaded")
                 if is_logged_out(page):
                     wait_for_relogin(page)
                 with STATE["lock"]:
@@ -579,13 +690,17 @@ def main():
                     time.sleep(5)
                     continue
 
-                # H5P necesita unos segundos para hidratar
-                time.sleep(random.uniform(3.0, 5.5))
+                # Pausa breve para que Moodle empiece a renderizar
+                time.sleep(random.uniform(1.5, 2.5))
                 if is_logged_out(page):
                     wait_for_relogin(page)
                     continue
-                human_scroll(page)
-                h5p_session(page)
+                # Esperar a que H5P esté listo (con recargas si no aparece)
+                if wait_for_h5p_ready(page):
+                    human_scroll(page)
+                    h5p_session(page)
+                else:
+                    print(c("    H5P no apareció tras varios reintentos, paso al siguiente módulo", "yellow"))
                 with STATE["lock"]:
                     STATE["modules_visited"] += 1
                 pauser.pause()
