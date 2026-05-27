@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.venvs/
+
+# Playwright
+.cache/
+test-results/
+playwright-report/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Logs y temporales
+*.log
+*.tmp
