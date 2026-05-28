@@ -632,7 +632,16 @@ def main():
         print(c("  Modo: infinito (Ctrl+C para parar)", "dim"))
 
     with Stealth().use_sync(sync_playwright()) as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(
+            headless=False,
+            # Render por software: evita crashes "Aw, Snap! SIGTRAP" del proceso
+            # de GPU (frecuente con gráficas AMD en Linux). No afecta a Nvidia.
+            args=[
+                "--disable-gpu",
+                "--disable-software-rasterizer",
+                "--disable-gpu-compositing",
+            ],
+        )
         ctx = browser.new_context(
             viewport={"width": 1366, "height": 820},
             locale="es-ES",
