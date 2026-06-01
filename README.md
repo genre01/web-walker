@@ -247,6 +247,26 @@ Línea a línea:
 
 ---
 
+## Problemas conocidos
+
+### El navegador se cierra solo con "Aw, Snap! / SIGTRAP"
+
+Suele pasar en algunas **gráficas AMD** en Linux: el proceso de GPU del navegador crashea. Solución: lanza con el flag `--no-gpu`, que desactiva la aceleración por GPU.
+
+```bash
+python web_walker_stealth.py "https://tu-campus.ejemplo.com/course/view.php?id=123" --no-gpu
+```
+
+> ⚠️ **Usa `--no-gpu` solo si tienes ese crash.** En equipos con GPU que funciona bien, desactivarla hace que el navegador renderice por software y el consumo de RAM puede dispararse (hasta agotar la memoria). Por eso la GPU va activada por defecto.
+
+El flag se puede combinar con los minutos:
+
+```bash
+python web_walker_stealth.py "https://tu-campus.ejemplo.com/course/view.php?id=123" 120 --no-gpu
+```
+
+---
+
 ## Estructura del repositorio
 
 ```

@@ -22,15 +22,23 @@ from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 
 # ── Config ──────────────────────────────────────────────────────────────────
-if len(sys.argv) < 2:
-    print("Uso: python web_walker_stealth.py <URL_curso> [minutos]")
+# Flag opcional --no-gpu: desactiva la aceleración por GPU. Útil SOLO si el
+# navegador crashea con "Aw, Snap! SIGTRAP" (típico en algunas GPUs AMD).
+# OJO: en máquinas con GPU sana, desactivarla dispara el uso de RAM (SwiftShader
+# renderizando WebGL por software), así que por defecto va ACTIVADA.
+DISABLE_GPU = "--no-gpu" in sys.argv
+args_clean = [a for a in sys.argv[1:] if a != "--no-gpu"]
+
+if len(args_clean) < 1:
+    print("Uso: python web_walker_stealth.py <URL_curso> [minutos] [--no-gpu]")
     print("  URL_curso : página principal del curso a recorrer")
     print("  minutos   : duración máxima (opcional; si se omite, corre hasta Ctrl+C)")
+    print("  --no-gpu  : desactiva la GPU (solo si el navegador crashea con SIGTRAP)")
     sys.exit(1)
 
-START_URL = sys.argv[1]
+START_URL = args_clean[0]
 # 2º argumento opcional: duración máxima en minutos. Si no se pasa, navega indefinidamente.
-MAX_MINUTES = float(sys.argv[2]) if len(sys.argv) > 2 else 0
+MAX_MINUTES = float(args_clean[1]) if len(args_clean) > 1 else 0
 TARGET_HOST = urlparse(START_URL).netloc
 
 # Lista de módulos del curso a los que el script entrará.
@@ -632,16 +640,16 @@ def main():
         print(c("  Modo: infinito (Ctrl+C para parar)", "dim"))
 
     with Stealth().use_sync(sync_playwright()) as p:
-        browser = p.chromium.launch(
-            headless=False,
-            # Render por software: evita crashes "Aw, Snap! SIGTRAP" del proceso
-            # de GPU (frecuente con gráficas AMD en Linux). No afecta a Nvidia.
-            args=[
+        launch_args = []
+        if DISABLE_GPU:
+            # Solo si se pasa --no-gpu (workaround para crash SIGTRAP en GPUs AMD).
+            launch_args = [
                 "--disable-gpu",
                 "--disable-software-rasterizer",
                 "--disable-gpu-compositing",
-            ],
-        )
+            ]
+            print(c("  GPU desactivada (--no-gpu). Ojo: puede aumentar el uso de RAM.", "yellow"))
+        browser = p.chromium.launch(headless=False, args=launch_args)
         ctx = browser.new_context(
             viewport={"width": 1366, "height": 820},
             locale="es-ES",
